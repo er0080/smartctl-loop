@@ -15,6 +15,48 @@ from datetime import datetime
 from pathlib import Path
 
 
+class Colors:
+    """ANSI color codes for terminal output"""
+    # Check if stdout is a terminal and supports colors
+    _is_tty = sys.stdout.isatty()
+
+    # Color codes
+    RED = '\033[91m' if _is_tty else ''
+    GREEN = '\033[92m' if _is_tty else ''
+    YELLOW = '\033[93m' if _is_tty else ''
+    BLUE = '\033[94m' if _is_tty else ''
+    MAGENTA = '\033[95m' if _is_tty else ''
+    CYAN = '\033[96m' if _is_tty else ''
+    WHITE = '\033[97m' if _is_tty else ''
+    BOLD = '\033[1m' if _is_tty else ''
+    RESET = '\033[0m' if _is_tty else ''
+
+    @classmethod
+    def success(cls, text):
+        """Return text in green (success)"""
+        return f"{cls.GREEN}{text}{cls.RESET}"
+
+    @classmethod
+    def error(cls, text):
+        """Return text in red (error)"""
+        return f"{cls.RED}{text}{cls.RESET}"
+
+    @classmethod
+    def warning(cls, text):
+        """Return text in yellow (warning)"""
+        return f"{cls.YELLOW}{text}{cls.RESET}"
+
+    @classmethod
+    def info(cls, text):
+        """Return text in cyan (info)"""
+        return f"{cls.CYAN}{text}{cls.RESET}"
+
+    @classmethod
+    def header(cls, text):
+        """Return text in bold (header)"""
+        return f"{cls.BOLD}{text}{cls.RESET}"
+
+
 class SMARTAttribute:
     """Maps SMART attribute IDs to their purposes"""
     POWER_ON_HOURS = 9
@@ -39,17 +81,17 @@ def check_dependencies():
                               text=True,
                               check=False)
         if result.returncode != 0:
-            print("ERROR: smartctl not found. Please install smartmontools:")
+            print(Colors.error("ERROR: smartctl not found. Please install smartmontools:"))
             print("  Ubuntu/Debian: sudo apt-get install smartmontools")
             print("  Fedora/RHEL: sudo dnf install smartmontools")
             return False
     except Exception as e:
-        print(f"ERROR: Failed to check for smartctl: {e}")
+        print(Colors.error(f"ERROR: Failed to check for smartctl: {e}"))
         return False
 
     # Check for root/sudo privileges
     if os.geteuid() != 0:
-        print("ERROR: This script requires root privileges.")
+        print(Colors.error("ERROR: This script requires root privileges."))
         print("Please run with: sudo python3 ssd_test.py")
         return False
 
@@ -305,14 +347,14 @@ def generate_warnings(device_info, attributes, health_status):
 
 def test_drive(device_path):
     """Test a single drive and return results dictionary"""
-    print(f"\nTesting drive: {device_path}")
-    print("Running smartctl commands...")
+    print(f"\n{Colors.info('Testing drive:')} {Colors.header(device_path)}")
+    print(Colors.info("Running smartctl commands..."))
 
     # Run smartctl with comprehensive options
     data, returncode = run_smartctl(device_path, ['-x'])
 
     if data is None:
-        print("ERROR: Failed to get smartctl data")
+        print(Colors.error("ERROR: Failed to get smartctl data"))
         return None
 
     # Extract all information
@@ -348,31 +390,91 @@ def test_drive(device_path):
 
 
 def display_results(results):
-    """Display test results to user"""
+    """Display test results to user with color coding"""
     if not results:
         return
 
-    print("\n" + "="*60)
-    print("DRIVE TEST RESULTS")
-    print("="*60)
-    print(f"Model:           {results['model']}")
+    # Determine health status color
+    health = results['health_status']
+    if health == 'PASSED':
+        health_colored = Colors.success(health)
+    elif health == 'FAILED':
+        health_colored = Colors.error(health)
+    else:
+        health_colored = health
+
+    # Color temperature based on value
+    temp = results['temperature_c']
+    if temp != 'N/A':
+        try:
+            temp_val = int(temp)
+            if temp_val > 70:
+                temp_colored = Colors.error(f"{temp}°C")
+            elif temp_val > 60:
+                temp_colored = Colors.warning(f"{temp}°C")
+            else:
+                temp_colored = f"{temp}°C"
+        except (ValueError, TypeError):
+            temp_colored = f"{temp}°C"
+    else:
+        temp_colored = temp
+
+    # Color wear level
+    wear = results['wear_level_pct']
+    if wear != 'N/A':
+        try:
+            wear_val = int(wear)
+            if wear_val > 80:
+                wear_colored = Colors.error(f"{wear}%")
+            elif wear_val > 50:
+                wear_colored = Colors.warning(f"{wear}%")
+            else:
+                wear_colored = Colors.success(f"{wear}%")
+        except (ValueError, TypeError):
+            wear_colored = f"{wear}%"
+    else:
+        wear_colored = wear
+
+    # Color sector errors
+    def color_sectors(value):
+        if value != 'N/A':
+            try:
+                if int(value) > 0:
+                    return Colors.error(str(value))
+                else:
+                    return Colors.success(str(value))
+            except (ValueError, TypeError):
+                pass
+        return str(value)
+
+    # Color warnings
+    warnings = results['warnings']
+    if warnings == 'None':
+        warnings_colored = Colors.success(warnings)
+    else:
+        warnings_colored = Colors.error(warnings)
+
+    print("\n" + Colors.header("="*60))
+    print(Colors.header("DRIVE TEST RESULTS"))
+    print(Colors.header("="*60))
+    print(f"Model:           {Colors.info(results['model'])}")
     print(f"Serial:          {results['serial']}")
     print(f"Firmware:        {results['firmware']}")
     print(f"Capacity:        {results['capacity_gb']} GB")
-    print(f"Health Status:   {results['health_status']}")
+    print(f"Health Status:   {health_colored}")
     print("-"*60)
     print(f"Power-On Hours:  {results['power_on_hours']}")
     print(f"Power Cycles:    {results['power_cycles']}")
-    print(f"Temperature:     {results['temperature_c']}°C")
+    print(f"Temperature:     {temp_colored}")
     print(f"Total Written:   {results['total_tb_written']} TB")
-    print(f"Wear Level:      {results['wear_level_pct']}%")
+    print(f"Wear Level:      {wear_colored}")
     print("-"*60)
-    print(f"Reallocated:     {results['reallocated_sectors']}")
-    print(f"Pending:         {results['pending_sectors']}")
-    print(f"Uncorrectable:   {results['uncorrectable_sectors']}")
+    print(f"Reallocated:     {color_sectors(results['reallocated_sectors'])}")
+    print(f"Pending:         {color_sectors(results['pending_sectors'])}")
+    print(f"Uncorrectable:   {color_sectors(results['uncorrectable_sectors'])}")
     print("-"*60)
-    print(f"Warnings:        {results['warnings']}")
-    print("="*60)
+    print(f"Warnings:        {warnings_colored}")
+    print(Colors.header("="*60))
 
 
 def save_to_csv(results, csv_filename):
@@ -400,19 +502,19 @@ def save_to_csv(results, csv_filename):
             # Write results row
             writer.writerow(results)
 
-        print(f"\nResults saved to: {csv_filename}")
+        print(f"\n{Colors.success('Results saved to:')} {csv_filename}")
         return True
 
     except Exception as e:
-        print(f"ERROR: Failed to save to CSV: {e}")
+        print(Colors.error(f"ERROR: Failed to save to CSV: {e}"))
         return False
 
 
 def main():
     """Main script execution"""
-    print("="*60)
-    print("SSD TESTING SCRIPT")
-    print("="*60)
+    print(Colors.header("="*60))
+    print(Colors.header("SSD TESTING SCRIPT"))
+    print(Colors.header("="*60))
 
     # Check dependencies
     if not check_dependencies():
@@ -423,36 +525,57 @@ def main():
 
     # Main testing loop
     drives_tested = 0
+    last_device = None  # Remember last device used
 
     while True:
-        print("\n" + "="*60)
-        print("AVAILABLE BLOCK DEVICES")
-        print("="*60)
+        print("\n" + Colors.header("="*60))
+        print(Colors.header("AVAILABLE BLOCK DEVICES"))
+        print(Colors.header("="*60))
 
         # List available devices
         devices = list_block_devices()
         if not devices:
-            print("No suitable block devices found.")
+            print(Colors.warning("No suitable block devices found."))
             response = input("\nRefresh device list? (y/n): ").strip().lower()
             if response == 'y':
                 continue
             else:
                 break
 
+        # Build list of device paths
+        device_paths = [f"/dev/{name}" for name, _ in devices]
+
+        # Check if last device is still available
+        last_device_available = last_device and last_device in device_paths
+
         for name, size in devices:
-            print(f"  /dev/{name} ({size})")
+            device_path = f"/dev/{name}"
+            if last_device_available and device_path == last_device:
+                print(f"  {Colors.info(device_path)} ({size}) {Colors.success('[LAST USED]')}")
+            else:
+                print(f"  {device_path} ({size})")
 
         # Get user device selection
-        print("\nEnter the device to test (e.g., /dev/sdb)")
+        print()
+        if last_device_available:
+            print(f"Enter the device to test (or press Enter for {Colors.info(last_device)})")
+        else:
+            print("Enter the device to test (e.g., /dev/sdb)")
         print("Or type 'quit' to exit")
+
         device_input = input("Device: ").strip()
+
+        # If empty input and last device available, use last device
+        if not device_input and last_device_available:
+            device_input = last_device
+            print(f"Using: {Colors.info(device_input)}")
 
         if device_input.lower() in ['quit', 'exit', 'q']:
             break
 
         # Validate device path
         if not validate_device_path(device_input):
-            print(f"ERROR: Invalid device path: {device_input}")
+            print(Colors.error(f"ERROR: Invalid device path: {device_input}"))
             print("Expected format: /dev/sd[a-z]")
             continue
 
@@ -467,6 +590,7 @@ def main():
             save_to_csv(results, csv_filename)
 
             drives_tested += 1
+            last_device = device_input  # Remember this device
 
         # Ask to test another drive
         print("\n" + "="*60)
@@ -475,12 +599,12 @@ def main():
             break
 
     # Summary
-    print("\n" + "="*60)
-    print("TESTING COMPLETE")
-    print("="*60)
-    print(f"Total drives tested: {drives_tested}")
+    print("\n" + Colors.header("="*60))
+    print(Colors.header("TESTING COMPLETE"))
+    print(Colors.header("="*60))
+    print(f"Total drives tested: {Colors.success(str(drives_tested))}")
     if drives_tested > 0:
-        print(f"Results saved to: {csv_filename}")
+        print(f"Results saved to: {Colors.info(csv_filename)}")
     print("\nThank you for using SSD Testing Script!")
 
 
