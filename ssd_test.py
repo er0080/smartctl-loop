@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+"""
+SSD Testing Script
+Automates testing of used SSD drives via USB-SATA interface using smartctl.
+Outputs results to CSV file for batch drive verification.
+"""
+
+import subprocess
+import json
+import csv
+import sys
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+
+
+class SMARTAttribute:
+    """Maps SMART attribute IDs to their purposes"""
+    POWER_ON_HOURS = 9
+    POWER_CYCLES = 12
+    TEMPERATURE = 194
+    REALLOCATED_SECTORS = 5
+    PENDING_SECTORS = 197
+    UNCORRECTABLE_SECTORS = 198
+    RESERVED_SPACE = 170
+    WEAR_LEVELING = 177
+    MEDIA_WEAROUT = 233
+    TOTAL_LBAS_WRITTEN = 241
+
+
+def check_dependencies():
+    """Verify smartctl is installed and script has sudo privileges"""
+    # Check for smartctl
+    try:
+        result = subprocess.run(['which', 'smartctl'],
+                              capture_output=True,
+                              text=True,
+                              check=False)
+        if result.returncode != 0:
+            print("ERROR: smartctl not found. Please install smartmontools:")
+            print("  Ubuntu/Debian: sudo apt-get install smartmontools")
+            print("  Fedora/RHEL: sudo dnf install smartmontools")
+            return False
+    except Exception as e:
+        print(f"ERROR: Failed to check for smartctl: {e}")
+        return False
+
+    # Check for root/sudo privileges
+    if os.geteuid() != 0:
+        print("ERROR: This script requires root privileges.")
+        print("Please run with: sudo python3 ssd_test.py")
+        return False
+
+    return True
+
+
+def list_block_devices():
+    """List available block devices, filtering for likely USB-SATA drives"""
+    try:
+        result = subprocess.run(['lsblk', '-d', '-n', '-o', 'NAME,SIZE,TYPE'],
+                              capture_output=True,
+                              text=True,
+                              check=True)
+
+        devices = []
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split()
+            if len(parts) >= 3:
+                name, size, dev_type = parts[0], parts[1], parts[2]
+                # Filter for disk type devices (not partitions or loops)
+                if dev_type == 'disk' and name.startswith('sd'):
+                    devices.append((name, size))
+
+        return devices
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: Failed to list block devices: {e}")
+        return []
+
+
+def validate_device_path(device_path):
+    """Validate device path to prevent command injection"""
+    # Must match /dev/sd[a-z] pattern
+    pattern = r'^/dev/sd[a-z]$'
+    if not re.match(pattern, device_path):
+        return False
+
+    # Verify device exists
+    if not Path(device_path).exists():
+        return False
+
+    return True
+
+
+def run_smartctl(device_path, options):
+    """Execute smartctl command and return JSON output"""
+    cmd = ['smartctl'] + options + ['-j', device_path]
+
+    try:
+        result = subprocess.run(cmd,
+                              capture_output=True,
+                              text=True,
+                              check=False)
+
+        # Parse JSON output
+        try:
+            data = json.loads(result.stdout)
+            return data, result.returncode
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Failed to parse smartctl JSON output: {e}")
+            return None, result.returncode
+
+    except Exception as e:
+        print(f"ERROR: Failed to execute smartctl: {e}")
+        return None, -1
+
+
+def extract_device_info(smartctl_data):
+    """Extract basic device information from smartctl output"""
+    info = {
+        'model': 'N/A',
+        'serial': 'N/A',
+        'firmware': 'N/A',
+        'capacity_gb': 'N/A'
+    }
+
+    if not smartctl_data:
+        return info
+
+    try:
+        # Extract model name
+        if 'model_name' in smartctl_data:
+            info['model'] = smartctl_data['model_name']
+        elif 'model_family' in smartctl_data:
+            info['model'] = smartctl_data['model_family']
+
+        # Extract serial number
+        if 'serial_number' in smartctl_data:
+            info['serial'] = smartctl_data['serial_number']
+
+        # Extract firmware version
+        if 'firmware_version' in smartctl_data:
+            info['firmware'] = smartctl_data['firmware_version']
+
+        # Extract capacity (convert to GB)
+        if 'user_capacity' in smartctl_data:
+            capacity_bytes = smartctl_data['user_capacity'].get('bytes', 0)
+            info['capacity_gb'] = round(capacity_bytes / (1024**3), 2)
+
+    except Exception as e:
+        print(f"WARNING: Error extracting device info: {e}")
+
+    return info
+
+
+def extract_smart_attributes(smartctl_data):
+    """Extract SMART attributes from smartctl output"""
+    attributes = {
+        'power_on_hours': 'N/A',
+        'power_cycles': 'N/A',
+        'temperature_c': 'N/A',
+        'reallocated_sectors': 'N/A',
+        'pending_sectors': 'N/A',
+        'uncorrectable_sectors': 'N/A',
+        'reserved_space_pct': 'N/A',
+        'wear_level_pct': 'N/A',
+        'total_lbas_written': 'N/A',
+        'total_tb_written': 'N/A'
+    }
+
+    if not smartctl_data or 'ata_smart_attributes' not in smartctl_data:
+        return attributes
+
+    try:
+        smart_attrs = smartctl_data['ata_smart_attributes'].get('table', [])
+
+        # Create lookup dictionary by attribute ID
+        attr_lookup = {attr['id']: attr for attr in smart_attrs}
+
+        # Extract each attribute by ID
+        if SMARTAttribute.POWER_ON_HOURS in attr_lookup:
+            attributes['power_on_hours'] = attr_lookup[SMARTAttribute.POWER_ON_HOURS]['raw']['value']
+
+        if SMARTAttribute.POWER_CYCLES in attr_lookup:
+            attributes['power_cycles'] = attr_lookup[SMARTAttribute.POWER_CYCLES]['raw']['value']
+
+        if SMARTAttribute.TEMPERATURE in attr_lookup:
+            attributes['temperature_c'] = attr_lookup[SMARTAttribute.TEMPERATURE]['raw']['value']
+
+        if SMARTAttribute.REALLOCATED_SECTORS in attr_lookup:
+            attributes['reallocated_sectors'] = attr_lookup[SMARTAttribute.REALLOCATED_SECTORS]['raw']['value']
+
+        if SMARTAttribute.PENDING_SECTORS in attr_lookup:
+            attributes['pending_sectors'] = attr_lookup[SMARTAttribute.PENDING_SECTORS]['raw']['value']
+
+        if SMARTAttribute.UNCORRECTABLE_SECTORS in attr_lookup:
+            attributes['uncorrectable_sectors'] = attr_lookup[SMARTAttribute.UNCORRECTABLE_SECTORS]['raw']['value']
+
+        if SMARTAttribute.RESERVED_SPACE in attr_lookup:
+            attributes['reserved_space_pct'] = attr_lookup[SMARTAttribute.RESERVED_SPACE]['value']
+
+        # Wear level - try multiple vendor-specific attributes
+        if SMARTAttribute.WEAR_LEVELING in attr_lookup:
+            attributes['wear_level_pct'] = attr_lookup[SMARTAttribute.WEAR_LEVELING]['value']
+        elif SMARTAttribute.MEDIA_WEAROUT in attr_lookup:
+            # Media wearout is typically 100 - usage, so invert it
+            attributes['wear_level_pct'] = 100 - attr_lookup[SMARTAttribute.MEDIA_WEAROUT]['value']
+
+        # Total LBAs written
+        if SMARTAttribute.TOTAL_LBAS_WRITTEN in attr_lookup:
+            lbas = attr_lookup[SMARTAttribute.TOTAL_LBAS_WRITTEN]['raw']['value']
+            attributes['total_lbas_written'] = lbas
+            # Convert to TB (assuming 512 byte sectors)
+            attributes['total_tb_written'] = round((lbas * 512) / (1024**4), 2)
+
+    except Exception as e:
+        print(f"WARNING: Error extracting SMART attributes: {e}")
+
+    return attributes
+
+
+def get_health_status(smartctl_data):
+    """Extract overall health status"""
+    if not smartctl_data:
+        return 'N/A'
+
+    try:
+        if 'smart_status' in smartctl_data:
+            passed = smartctl_data['smart_status'].get('passed', False)
+            return 'PASSED' if passed else 'FAILED'
+    except Exception:
+        pass
+
+    return 'N/A'
+
+
+def get_self_test_result(smartctl_data):
+    """Extract last self-test result"""
+    if not smartctl_data:
+        return 'N/A'
+
+    try:
+        if 'ata_smart_data' in smartctl_data:
+            self_test = smartctl_data['ata_smart_data'].get('self_test', {})
+            status = self_test.get('status', {})
+            if 'passed' in status:
+                return 'PASSED' if status['passed'] else 'FAILED'
+    except Exception:
+        pass
+
+    return 'N/A'
+
+
+def generate_warnings(device_info, attributes, health_status):
+    """Generate warning messages based on drive health metrics"""
+    warnings = []
+
+    # Check health status
+    if health_status == 'FAILED':
+        warnings.append('SMART_HEALTH_FAILED')
+
+    # Check for sector errors
+    try:
+        if attributes['reallocated_sectors'] != 'N/A' and int(attributes['reallocated_sectors']) > 0:
+            warnings.append(f"REALLOCATED_SECTORS:{attributes['reallocated_sectors']}")
+
+        if attributes['pending_sectors'] != 'N/A' and int(attributes['pending_sectors']) > 0:
+            warnings.append(f"PENDING_SECTORS:{attributes['pending_sectors']}")
+
+        if attributes['uncorrectable_sectors'] != 'N/A' and int(attributes['uncorrectable_sectors']) > 0:
+            warnings.append(f"UNCORRECTABLE_SECTORS:{attributes['uncorrectable_sectors']}")
+    except (ValueError, TypeError):
+        pass
+
+    # Check temperature
+    try:
+        if attributes['temperature_c'] != 'N/A':
+            temp = int(attributes['temperature_c'])
+            if temp > 70:
+                warnings.append(f"HIGH_TEMP:{temp}C")
+    except (ValueError, TypeError):
+        pass
+
+    # Check wear level
+    try:
+        if attributes['wear_level_pct'] != 'N/A':
+            wear = int(attributes['wear_level_pct'])
+            if wear > 80:
+                warnings.append(f"HIGH_WEAR:{wear}%")
+    except (ValueError, TypeError):
+        pass
+
+    return ', '.join(warnings) if warnings else 'None'
+
+
+def test_drive(device_path):
+    """Test a single drive and return results dictionary"""
+    print(f"\nTesting drive: {device_path}")
+    print("Running smartctl commands...")
+
+    # Run smartctl with comprehensive options
+    data, returncode = run_smartctl(device_path, ['-x'])
+
+    if data is None:
+        print("ERROR: Failed to get smartctl data")
+        return None
+
+    # Extract all information
+    device_info = extract_device_info(data)
+    attributes = extract_smart_attributes(data)
+    health_status = get_health_status(data)
+    self_test_result = get_self_test_result(data)
+    warnings = generate_warnings(device_info, attributes, health_status)
+
+    # Compile results
+    results = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'model': device_info['model'],
+        'serial': device_info['serial'],
+        'firmware': device_info['firmware'],
+        'capacity_gb': device_info['capacity_gb'],
+        'health_status': health_status,
+        'power_on_hours': attributes['power_on_hours'],
+        'power_cycles': attributes['power_cycles'],
+        'temperature_c': attributes['temperature_c'],
+        'total_lbas_written': attributes['total_lbas_written'],
+        'total_tb_written': attributes['total_tb_written'],
+        'wear_level_pct': attributes['wear_level_pct'],
+        'reserved_space_pct': attributes['reserved_space_pct'],
+        'reallocated_sectors': attributes['reallocated_sectors'],
+        'pending_sectors': attributes['pending_sectors'],
+        'uncorrectable_sectors': attributes['uncorrectable_sectors'],
+        'self_test_result': self_test_result,
+        'warnings': warnings
+    }
+
+    return results
+
+
+def display_results(results):
+    """Display test results to user"""
+    if not results:
+        return
+
+    print("\n" + "="*60)
+    print("DRIVE TEST RESULTS")
+    print("="*60)
+    print(f"Model:           {results['model']}")
+    print(f"Serial:          {results['serial']}")
+    print(f"Firmware:        {results['firmware']}")
+    print(f"Capacity:        {results['capacity_gb']} GB")
+    print(f"Health Status:   {results['health_status']}")
+    print("-"*60)
+    print(f"Power-On Hours:  {results['power_on_hours']}")
+    print(f"Power Cycles:    {results['power_cycles']}")
+    print(f"Temperature:     {results['temperature_c']}°C")
+    print(f"Total Written:   {results['total_tb_written']} TB")
+    print(f"Wear Level:      {results['wear_level_pct']}%")
+    print("-"*60)
+    print(f"Reallocated:     {results['reallocated_sectors']}")
+    print(f"Pending:         {results['pending_sectors']}")
+    print(f"Uncorrectable:   {results['uncorrectable_sectors']}")
+    print("-"*60)
+    print(f"Warnings:        {results['warnings']}")
+    print("="*60)
+
+
+def save_to_csv(results, csv_filename):
+    """Save test results to CSV file"""
+    # Define CSV columns
+    fieldnames = [
+        'timestamp', 'model', 'serial', 'firmware', 'capacity_gb',
+        'health_status', 'power_on_hours', 'power_cycles', 'temperature_c',
+        'total_lbas_written', 'total_tb_written', 'wear_level_pct',
+        'reserved_space_pct', 'reallocated_sectors', 'pending_sectors',
+        'uncorrectable_sectors', 'self_test_result', 'warnings'
+    ]
+
+    # Check if file exists to determine if we need to write header
+    file_exists = Path(csv_filename).exists()
+
+    try:
+        with open(csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+            # Write header if new file
+            if not file_exists:
+                writer.writeheader()
+
+            # Write results row
+            writer.writerow(results)
+
+        print(f"\nResults saved to: {csv_filename}")
+        return True
+
+    except Exception as e:
+        print(f"ERROR: Failed to save to CSV: {e}")
+        return False
+
+
+def main():
+    """Main script execution"""
+    print("="*60)
+    print("SSD TESTING SCRIPT")
+    print("="*60)
+
+    # Check dependencies
+    if not check_dependencies():
+        sys.exit(1)
+
+    # Generate CSV filename with timestamp
+    csv_filename = f"ssd_test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+    # Main testing loop
+    drives_tested = 0
+
+    while True:
+        print("\n" + "="*60)
+        print("AVAILABLE BLOCK DEVICES")
+        print("="*60)
+
+        # List available devices
+        devices = list_block_devices()
+        if not devices:
+            print("No suitable block devices found.")
+            response = input("\nRefresh device list? (y/n): ").strip().lower()
+            if response == 'y':
+                continue
+            else:
+                break
+
+        for name, size in devices:
+            print(f"  /dev/{name} ({size})")
+
+        # Get user device selection
+        print("\nEnter the device to test (e.g., /dev/sdb)")
+        print("Or type 'quit' to exit")
+        device_input = input("Device: ").strip()
+
+        if device_input.lower() in ['quit', 'exit', 'q']:
+            break
+
+        # Validate device path
+        if not validate_device_path(device_input):
+            print(f"ERROR: Invalid device path: {device_input}")
+            print("Expected format: /dev/sd[a-z]")
+            continue
+
+        # Test the drive
+        results = test_drive(device_input)
+
+        if results:
+            # Display results
+            display_results(results)
+
+            # Save to CSV
+            save_to_csv(results, csv_filename)
+
+            drives_tested += 1
+
+        # Ask to test another drive
+        print("\n" + "="*60)
+        response = input("Test another drive? (y/n): ").strip().lower()
+        if response != 'y':
+            break
+
+    # Summary
+    print("\n" + "="*60)
+    print("TESTING COMPLETE")
+    print("="*60)
+    print(f"Total drives tested: {drives_tested}")
+    if drives_tested > 0:
+        print(f"Results saved to: {csv_filename}")
+    print("\nThank you for using SSD Testing Script!")
+
+
+if __name__ == '__main__':
+    main()
