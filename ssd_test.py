@@ -25,6 +25,7 @@ class SMARTAttribute:
     UNCORRECTABLE_SECTORS = 198
     RESERVED_SPACE = 170
     WEAR_LEVELING = 177
+    SSD_LIFE_LEFT = 231
     MEDIA_WEAROUT = 233
     TOTAL_LBAS_WRITTEN = 241
 
@@ -200,11 +201,20 @@ def extract_smart_attributes(smartctl_data):
             attributes['reserved_space_pct'] = attr_lookup[SMARTAttribute.RESERVED_SPACE]['value']
 
         # Wear level - try multiple vendor-specific attributes
+        # All these attributes report "remaining life %" (100=new, 0=dead)
+        # Convert to "wear consumed %" by inverting: wear = 100 - remaining
         if SMARTAttribute.WEAR_LEVELING in attr_lookup:
-            attributes['wear_level_pct'] = attr_lookup[SMARTAttribute.WEAR_LEVELING]['value']
+            # Attr 177: Samsung Wear_Leveling_Count (100=new, decreases with wear)
+            remaining = attr_lookup[SMARTAttribute.WEAR_LEVELING]['value']
+            attributes['wear_level_pct'] = 100 - remaining
+        elif SMARTAttribute.SSD_LIFE_LEFT in attr_lookup:
+            # Attr 231: SSD_Life_Left (100=new, decreases with wear)
+            remaining = attr_lookup[SMARTAttribute.SSD_LIFE_LEFT]['value']
+            attributes['wear_level_pct'] = 100 - remaining
         elif SMARTAttribute.MEDIA_WEAROUT in attr_lookup:
-            # Media wearout is typically 100 - usage, so invert it
-            attributes['wear_level_pct'] = 100 - attr_lookup[SMARTAttribute.MEDIA_WEAROUT]['value']
+            # Attr 233: Intel Media_Wearout_Indicator (100=new, 0=worn)
+            remaining = attr_lookup[SMARTAttribute.MEDIA_WEAROUT]['value']
+            attributes['wear_level_pct'] = 100 - remaining
 
         # Total LBAs written
         if SMARTAttribute.TOTAL_LBAS_WRITTEN in attr_lookup:

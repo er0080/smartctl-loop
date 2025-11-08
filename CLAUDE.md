@@ -28,7 +28,10 @@ smartctl -x -j /dev/sdX  # Comprehensive data in single call
 
 Different SSD vendors use different SMART attribute IDs for the same metrics. The script must handle vendor variations:
 
-- **Wear indicators**: Check both ID 177 (Wear_Leveling_Count) and ID 233 (Media_Wearout_Indicator)
+- **Wear indicators**: Check ID 177 (Samsung Wear_Leveling_Count), ID 231 (SSD_Life_Left), and ID 233 (Intel Media_Wearout_Indicator)
+  - **Critical**: All wear attributes report "remaining life %" (100 = new, 0 = worn)
+  - Must invert to "wear consumed %": `wear_pct = 100 - remaining_life_value`
+  - Example: SMART value of 99 means 99% life remaining → 1% wear consumed
 - **Reserved space**: ID 170 (Available_Reservd_Space) - note vendor-specific naming
 - **Write endurance**: ID 241 (Total_LBAs_Written) requires conversion (raw LBAs → TB)
 

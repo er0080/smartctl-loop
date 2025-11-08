@@ -41,14 +41,17 @@ The script will extract and analyze the following critical parameters:
 | 197 | Current_Pending_Sector | Sectors waiting for remapping |
 | 198 | Offline_Uncorrectable | Uncorrectable sector count |
 | 170 | Available_Reservd_Space | Remaining spare blocks (%) |
-| 177 | Wear_Leveling_Count | SSD wear indicator |
-| 233 | Media_Wearout_Indicator | Intel/Samsung wear metric |
+| 177 | Wear_Leveling_Count | SSD wear indicator (Samsung/various) |
+| 231 | SSD_Life_Left | Remaining drive life percentage |
+| 233 | Media_Wearout_Indicator | Intel wear metric |
 | 241 | Total_LBAs_Written | Total logical blocks written |
 
 ### Health Indicators
 - **Overall SMART Health**: PASSED/FAILED status
 - **Self-Test Result**: Short self-test pass/fail
-- **Wear Level**: Percentage of drive life consumed
+- **Wear Level**: Percentage of drive life consumed (0% = new, 100% = worn out)
+  - Note: SMART attributes 177/231/233 report "remaining life" (100 = new)
+  - Script converts to "consumed" by calculating: 100 - remaining_life_value
 - **Critical Warnings**: Any parameters exceeding safe thresholds
 
 ## Script Workflow
