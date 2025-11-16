@@ -1,7 +1,7 @@
 # SSD Testing Script - Project Plan
 
 ## Overview
-A Python script to automate the testing and verification of used SSD drives connected via USB-SATA interface. The script uses `smartctl` to gather SMART data and health metrics, then saves the results to a CSV file for easy analysis and record-keeping.
+A Python script to automate the testing and verification of used SSD drives connected via USB-SATA interface. The script uses `smartctl` to gather SMART data and health metrics, then saves the results to a CSV file for easy analysis and record-keeping. My personal use for this software is printing labels/stickers for inventory tracking purposes. I use MS Word "mail merge" feature for this purpose.
 
 ## Objectives
 - Automate drive detection and testing workflow
