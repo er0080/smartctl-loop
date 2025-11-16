@@ -42,7 +42,9 @@ Different SSD vendors use different SMART attribute IDs for the same metrics. Th
 - **Write endurance**: Vendor differences are critical!
   - **Samsung/Intel**: ID 241 (Total_LBAs_Written) = actual LBA count, multiply by 512 to get bytes
   - **WD/Kingston/SanDisk**: ID 241 = already in GB units, NOT LBAs!
-  - **Crucial/Micron**: Use ID 246 (Host_Writes_32MiB) in 32 MiB units, not ID 241
+  - **Crucial**: ID 246 named "Total_LBAs_Written" = actual LBA count (like Samsung)
+  - **Micron**: ID 246 named "Host_Writes_32MiB" = 32 MiB units
+  - **Solution**: Check attribute name, not just ID number
   - **Heuristic**: If raw value > 100,000 → treat as LBAs; if < 100,000 → treat as GB
 
 - **Reserved space**: ID 170 (Available_Reservd_Space) - note vendor-specific naming

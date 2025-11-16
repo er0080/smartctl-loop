@@ -284,33 +284,40 @@ def extract_smart_attributes(smartctl_data):
         # Total data written - handle vendor-specific differences
         # Samsung/Intel: Attribute 241 is raw LBA count (multiply by 512)
         # WD/Kingston/SanDisk: Attribute 241 is already in GB
-        # Crucial/Micron: Attribute 246 in 32 MiB units
+        # Crucial: Attribute 246 named "Total_LBAs_Written" (LBA count)
+        # Micron: Attribute 246 named "Host_Writes_32MiB" (32 MiB units)
 
         tb_written = None
         data_written_raw = None
 
+        # Check attribute 241 or 246
+        write_attr = None
         if SMARTAttribute.TOTAL_LBAS_WRITTEN in attr_lookup:
-            attr_241 = attr_lookup[SMARTAttribute.TOTAL_LBAS_WRITTEN]
-            raw_value = attr_241['raw']['value']
-
-            # Heuristic: If value > 100,000, likely LBAs (Samsung/Intel style)
-            # If value < 100,000, likely already in GB (WD/Kingston style)
-            if raw_value > 100000:
-                # Treat as LBA count - multiply by 512 bytes
-                data_written_raw = raw_value
-                tb_written = round((raw_value * 512) / (1024**4), 2)
-            else:
-                # Treat as GB already - convert to TB
-                data_written_raw = raw_value
-                tb_written = round(raw_value / 1024, 2)
-
-        # Crucial/Micron fallback: check attribute 246 (Host_Writes_32MiB)
+            write_attr = attr_lookup[SMARTAttribute.TOTAL_LBAS_WRITTEN]
         elif SMARTAttribute.HOST_WRITES_32MIB in attr_lookup:
-            attr_246 = attr_lookup[SMARTAttribute.HOST_WRITES_32MIB]
-            raw_value = attr_246['raw']['value']
-            # Value is in 32 MiB units
-            data_written_raw = raw_value
-            tb_written = round((raw_value * 32) / (1024 * 1024), 2)
+            write_attr = attr_lookup[SMARTAttribute.HOST_WRITES_32MIB]
+
+        if write_attr:
+            raw_value = write_attr['raw']['value']
+            attr_name = write_attr.get('name', '')
+
+            # Check if attribute is specifically "Host_Writes_32MiB"
+            if 'Host_Writes_32MiB' in attr_name or '32MiB' in attr_name:
+                # Micron style: value is in 32 MiB units
+                data_written_raw = raw_value
+                tb_written = round((raw_value * 32) / (1024 * 1024), 2)
+            else:
+                # Standard LBA-based attribute (Crucial/Samsung/WD/Kingston)
+                # Heuristic: If value > 100,000, likely LBAs (Samsung/Intel/Crucial style)
+                # If value < 100,000, likely already in GB (WD/Kingston style)
+                if raw_value > 100000:
+                    # Treat as LBA count - multiply by 512 bytes
+                    data_written_raw = raw_value
+                    tb_written = round((raw_value * 512) / (1024**4), 2)
+                else:
+                    # Treat as GB already - convert to TB
+                    data_written_raw = raw_value
+                    tb_written = round(raw_value / 1024, 2)
 
         if data_written_raw is not None:
             attributes['total_lbas_written'] = data_written_raw
