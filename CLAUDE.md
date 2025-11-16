@@ -32,8 +32,20 @@ Different SSD vendors use different SMART attribute IDs for the same metrics. Th
   - **Critical**: All wear attributes report "remaining life %" (100 = new, 0 = worn)
   - Must invert to "wear consumed %": `wear_pct = 100 - remaining_life_value`
   - Example: SMART value of 99 means 99% life remaining → 1% wear consumed
+
+- **Temperature (ID 194)**:
+  - **Issue**: raw['value'] is a packed integer containing min/max/current temps in different bytes
+  - **Solution**: Use top-level JSON field `temperature.current` (most reliable)
+  - **Fallback**: Parse raw['string'] or extract lowest byte (raw_value & 0xFF)
+  - Samsung drives may not report temperature via SMART attribute
+
+- **Write endurance**: Vendor differences are critical!
+  - **Samsung/Intel**: ID 241 (Total_LBAs_Written) = actual LBA count, multiply by 512 to get bytes
+  - **WD/Kingston/SanDisk**: ID 241 = already in GB units, NOT LBAs!
+  - **Crucial/Micron**: Use ID 246 (Host_Writes_32MiB) in 32 MiB units, not ID 241
+  - **Heuristic**: If raw value > 100,000 → treat as LBAs; if < 100,000 → treat as GB
+
 - **Reserved space**: ID 170 (Available_Reservd_Space) - note vendor-specific naming
-- **Write endurance**: ID 241 (Total_LBAs_Written) requires conversion (raw LBAs → TB)
 
 Critical attributes for health assessment:
 - IDs 5, 197, 198: Sector errors (reallocated, pending, uncorrectable)

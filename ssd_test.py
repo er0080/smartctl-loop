@@ -70,6 +70,7 @@ class SMARTAttribute:
     SSD_LIFE_LEFT = 231
     MEDIA_WEAROUT = 233
     TOTAL_LBAS_WRITTEN = 241
+    HOST_WRITES_32MIB = 246  # Crucial/Micron use this instead of 241
 
 
 def check_dependencies():
@@ -211,10 +212,18 @@ def extract_smart_attributes(smartctl_data):
         'total_tb_written': 'N/A'
     }
 
-    if not smartctl_data or 'ata_smart_attributes' not in smartctl_data:
+    if not smartctl_data:
         return attributes
 
     try:
+        # Extract temperature from top-level JSON field (more reliable)
+        if 'temperature' in smartctl_data and 'current' in smartctl_data['temperature']:
+            attributes['temperature_c'] = smartctl_data['temperature']['current']
+
+        # Extract SMART attributes if available
+        if 'ata_smart_attributes' not in smartctl_data:
+            return attributes
+
         smart_attrs = smartctl_data['ata_smart_attributes'].get('table', [])
 
         # Create lookup dictionary by attribute ID
@@ -227,8 +236,22 @@ def extract_smart_attributes(smartctl_data):
         if SMARTAttribute.POWER_CYCLES in attr_lookup:
             attributes['power_cycles'] = attr_lookup[SMARTAttribute.POWER_CYCLES]['raw']['value']
 
-        if SMARTAttribute.TEMPERATURE in attr_lookup:
-            attributes['temperature_c'] = attr_lookup[SMARTAttribute.TEMPERATURE]['raw']['value']
+        # Temperature fallback: if not found at top level, try SMART attribute
+        # Use raw string or extract from lowest byte of raw value
+        if attributes['temperature_c'] == 'N/A' and SMARTAttribute.TEMPERATURE in attr_lookup:
+            temp_attr = attr_lookup[SMARTAttribute.TEMPERATURE]
+            # Try raw string first (often has format "36 (Min/Max 2/56)")
+            if 'raw' in temp_attr and 'string' in temp_attr['raw']:
+                temp_str = temp_attr['raw']['string']
+                # Extract first number from string
+                import re
+                match = re.match(r'(\d+)', temp_str)
+                if match:
+                    attributes['temperature_c'] = int(match.group(1))
+            # Fallback: use lowest byte of raw value (current temp usually in byte 0)
+            elif 'raw' in temp_attr and 'value' in temp_attr['raw']:
+                raw_val = temp_attr['raw']['value']
+                attributes['temperature_c'] = raw_val & 0xFF  # Extract lowest byte
 
         if SMARTAttribute.REALLOCATED_SECTORS in attr_lookup:
             attributes['reallocated_sectors'] = attr_lookup[SMARTAttribute.REALLOCATED_SECTORS]['raw']['value']
@@ -258,12 +281,41 @@ def extract_smart_attributes(smartctl_data):
             remaining = attr_lookup[SMARTAttribute.MEDIA_WEAROUT]['value']
             attributes['wear_level_pct'] = 100 - remaining
 
-        # Total LBAs written
+        # Total data written - handle vendor-specific differences
+        # Samsung/Intel: Attribute 241 is raw LBA count (multiply by 512)
+        # WD/Kingston/SanDisk: Attribute 241 is already in GB
+        # Crucial/Micron: Attribute 246 in 32 MiB units
+
+        tb_written = None
+        data_written_raw = None
+
         if SMARTAttribute.TOTAL_LBAS_WRITTEN in attr_lookup:
-            lbas = attr_lookup[SMARTAttribute.TOTAL_LBAS_WRITTEN]['raw']['value']
-            attributes['total_lbas_written'] = lbas
-            # Convert to TB (assuming 512 byte sectors)
-            attributes['total_tb_written'] = round((lbas * 512) / (1024**4), 2)
+            attr_241 = attr_lookup[SMARTAttribute.TOTAL_LBAS_WRITTEN]
+            raw_value = attr_241['raw']['value']
+
+            # Heuristic: If value > 100,000, likely LBAs (Samsung/Intel style)
+            # If value < 100,000, likely already in GB (WD/Kingston style)
+            if raw_value > 100000:
+                # Treat as LBA count - multiply by 512 bytes
+                data_written_raw = raw_value
+                tb_written = round((raw_value * 512) / (1024**4), 2)
+            else:
+                # Treat as GB already - convert to TB
+                data_written_raw = raw_value
+                tb_written = round(raw_value / 1024, 2)
+
+        # Crucial/Micron fallback: check attribute 246 (Host_Writes_32MiB)
+        elif SMARTAttribute.HOST_WRITES_32MIB in attr_lookup:
+            attr_246 = attr_lookup[SMARTAttribute.HOST_WRITES_32MIB]
+            raw_value = attr_246['raw']['value']
+            # Value is in 32 MiB units
+            data_written_raw = raw_value
+            tb_written = round((raw_value * 32) / (1024 * 1024), 2)
+
+        if data_written_raw is not None:
+            attributes['total_lbas_written'] = data_written_raw
+        if tb_written is not None:
+            attributes['total_tb_written'] = tb_written
 
     except Exception as e:
         print(f"WARNING: Error extracting SMART attributes: {e}")
